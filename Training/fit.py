@@ -89,7 +89,9 @@ def fit_v2(
             predictions = model(batch_x)
 
             # Compute loss
-            loss = loss_fn(predictions, batch_y)
+            loss = loss_fn(
+                predictions, batch_y, target=torch.ones(batch_x.shape[0]).cuda()
+            )
             # print(f"Batch {itr+1}, Loss: {loss.item()}")
 
             # Backward pass
@@ -123,7 +125,11 @@ def fit_v2(
                     f"Epoch {epoch+1}/{epochs} - Loss: {epoch_loss:.4f}, Test Loss: {test_loss:.4f}, Accuracy: {accuracy:.4f}"
                 )
             elif mode == "regression":
-                test_loss = loss_fn(test_predictions.squeeze(), y_test).item()
+                test_loss = loss_fn(
+                    test_predictions.squeeze(),
+                    y_test,
+                    target=torch.ones(y_test.shape[0]).cuda(),
+                ).item()
                 print(
                     f"Epoch {epoch+1}/{epochs} - Loss: {epoch_loss:.4f}, Test Loss: {test_loss:.4f}"
                 )

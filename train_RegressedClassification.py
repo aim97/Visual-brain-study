@@ -41,7 +41,8 @@ fromBrain = SimpleClassifier([420, 256])
 fromRegressed = SimpleClassifier([420, 256])
 
 fit(
-    fromBrain,
+    # fromBrain,
+    fromRegressed,
     # train_brain_features,
     # val_brain_features,
     train_regressed_features,

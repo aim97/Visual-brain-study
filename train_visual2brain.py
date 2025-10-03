@@ -38,8 +38,8 @@ fit_v2(
     visual_features_test,
     brain_features_train,
     brain_features_test,
-    F.mse_loss,
-    epochs=300,
+    F.cosine_embedding_loss,
+    epochs=400,
     mode="regression",
 )
 
