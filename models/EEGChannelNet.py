@@ -163,9 +163,7 @@ class Model(nn.Module):
         )
 
     def forward(self, x):
-        # print("forward >> ", x.shape)
-        out = x.reshape(16, 1, 128, 440)
-        out = self.encoder(out)
+        out = self.encoder(x)
 
         out = out.view(x.size(0), -1)
 

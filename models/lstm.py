@@ -40,14 +40,8 @@ class Model(nn.Module):
         # Prepare LSTM initiale state
         batch_size = x.size(0)
         lstm_init = (
-            torch.zeros(self.lstm_layers, batch_size, self.lstm_size),
-            torch.zeros(self.lstm_layers, batch_size, self.lstm_size),
-        )
-        if x.is_cuda:
-            lstm_init = (lstm_init[0].cuda(), lstm_init[0].cuda())
-        lstm_init = (
-            Variable(lstm_init[0], volatile=x.volatile),
-            Variable(lstm_init[1], volatile=x.volatile),
+            torch.zeros(self.lstm_layers, batch_size, self.lstm_size, device=x.device),
+            torch.zeros(self.lstm_layers, batch_size, self.lstm_size, device=x.device),
         )
 
         # Forward LSTM and get final state
@@ -55,5 +49,6 @@ class Model(nn.Module):
 
         # Forward output
         x = F.relu(self.output(x))
-        x = self.classifier((x))
+        x = self.classifier(x)
         return x
+

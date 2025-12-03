@@ -47,7 +47,7 @@ class EEGDataset:
         eeg = self.data[i]["eeg"].float().t()
         eeg = eeg[self.opt.time_low : self.opt.time_high, :]
 
-        if self.opt.model_type == "model10":
+        if self.opt.model_type != "lstm":
             eeg = eeg.t()
             eeg = eeg.view(1, 128, self.opt.time_high - self.opt.time_low)
         # Get label

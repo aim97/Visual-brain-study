@@ -1,8 +1,8 @@
 import torch
-
+from torch.utils.data import Dataset
 
 # Splitter class
-class Splitter:
+class Splitter(Dataset):
 
     def __init__(self, dataset, split_path, split_num=0, split_name="train"):
         # Set EEG dataset
@@ -26,6 +26,6 @@ class Splitter:
     # Get item
     def __getitem__(self, i):
         # Get sample from dataset
-        eeg, label = self.dataset[self.split_idx[i]]
+        eeg, label = self.dataset[self.split_idx[i]] 
         # Return
         return eeg, label

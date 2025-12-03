@@ -1,31 +1,18 @@
 # Define options
 import argparse
 import pickle
-
-# Imports
-# import sys
-# import os
-# import random
-# import math
-# import time
 import torch
 import os
 import glob
 
-torch.utils.backcompat.broadcast_warning.enabled = True
+torch.utils.backcompat.broadcast_warning.enabled = True # type: ignore
 
 from torch.utils.data import DataLoader
-from torchvision import transforms, datasets
-import torch.nn as nn
 import torch.nn.functional as F
 import torch.optim
 import torch.backends.cudnn as cudnn
 
 cudnn.benchmark = True
-from scipy.fftpack import fft, rfft, fftfreq, irfft, ifft, rfftfreq
-from scipy import signal
-import numpy as np
-import models
 import importlib
 
 # import EEGDataset class from utils
@@ -33,6 +20,7 @@ from utils.EEGDataset import EEGDataset
 from utils.Splitter import Splitter
 
 parser = argparse.ArgumentParser(description="Template")
+
 # Dataset options
 
 # Data - Data needs to be pre-filtered and filtered data is available
@@ -121,6 +109,16 @@ parser.add_argument(
     type=int,
     help="learning rate decay period",
 )
+
+# learning rate decay limit
+parser.add_argument(
+    "-lrl",
+    "--learning-rate-decay-limit",
+    default=0.00001,
+    type=float,
+    help="learning rate decay limit",
+)
+
 parser.add_argument(
     "-dw", "--data-workers", default=4, type=int, help="data loading workers"
 )
@@ -134,10 +132,22 @@ parser.add_argument(
     "--no-cuda", default=False, help="disable CUDA", action="store_true"
 )
 
+parser.add_argument(
+    "-expn",
+    "--experiment-name", help="experiment name", required=True
+)
+
 # Parse arguments
 opt = parser.parse_args()
 print(opt)
 
+dataset_type = opt.eeg_dataset.split("/")[3].split(".")[0]
+
+saving_path = os.path.join("./stored models", f"{opt.model_type}_{dataset_type}_{opt.experiment_name}")
+if not os.path.exists(saving_path):
+    os.makedirs(saving_path)
+else:
+    exit("Experiment name already exists. Choose another name.")
 
 def delete_files(pattern):
     """deletes files with given name pattern
@@ -212,14 +222,14 @@ correct_labels = []
 
 for epoch in range(1, opt.epochs + 1):
     # Initialize loss/accuracy variables
-    losses = {"train": 0, "val": 0, "test": 0}
+    losses = {"train": 0.0, "val": 0.0, "test": 0.0}
     accuracies = {"train": 0, "val": 0, "test": 0}
     counts = {"train": 0, "val": 0, "test": 0}
     # Adjust learning rate for SGD
     if opt.optim == "SGD":
-        lr = opt.learning_rate * (
+        lr = max(opt.learning_rate * (
             opt.learning_rate_decay_by ** (epoch // opt.learning_rate_decay_every)
-        )
+        ), opt.learning_rate_decay_limit)
         for param_group in optimizer.param_groups:
             param_group["lr"] = lr
     # Process each split
@@ -260,15 +270,14 @@ for epoch in range(1, opt.epochs + 1):
         best_accuracy_val = accuracies["val"] / counts["val"]
         best_accuracy = accuracies["test"] / counts["test"]
         best_epoch = epoch
-
-    TrL, TrA, VL, VA, TeL, TeA = (
-        losses["train"] / counts["train"],
-        accuracies["train"] / counts["train"],
-        losses["val"] / counts["val"],
-        accuracies["val"] / counts["val"],
-        losses["test"] / counts["test"],
-        accuracies["test"] / counts["test"],
-    )
+    
+    TrL =    losses["train"] / counts["train"],
+    TrA =    accuracies["train"] / counts["train"],
+    VL =    losses["val"] / counts["val"],
+    VA =    accuracies["val"] / counts["val"],
+    TeL =    losses["test"] / counts["test"],
+    TeA =    accuracies["test"] / counts["test"],
+    
     print(
         "Model: {11} - Subject {12} - Time interval: [{9}-{10}]  [{9}-{10} Hz] - Epoch {0}: TrL={1:.4f}, TrA={2:.4f}, VL={3:.4f}, VA={4:.4f}, TeL={5:.4f}, TeA={6:.4f}, TeA at max VA = {7:.4f} at epoch {8:d}".format(
             epoch,
@@ -288,9 +297,9 @@ for epoch in range(1, opt.epochs + 1):
     )
 
     if len(accuracies_per_epoch["val"]) == 0 or VA > max(accuracies_per_epoch["val"]):
-        delete_files("%s__subject%d_epoch_*.pth" % (opt.model_type, opt.subject))
+        delete_files("%s/%s__subject%d_epoch_*.pth" % (saving_path,opt.model_type, opt.subject))
         torch.save(
-            model, "%s__subject%d_epoch_%d.pth" % (opt.model_type, opt.subject, epoch)
+            model, "%s/%s__subject%d_epoch_%d.pth" % (saving_path, opt.model_type, opt.subject, epoch)
         )
 
     losses_per_epoch["train"].append(TrL)
@@ -302,8 +311,8 @@ for epoch in range(1, opt.epochs + 1):
 
 
 # save the loss and accuracy across all epochs
-with open("losses_per_epoch.pkl", "wb") as f:
+with open(f"{saving_path}/losses_per_epoch.pkl", "wb") as f:
     pickle.dump(losses_per_epoch, f)
 
-with open("accuracies_per_epoch.pkl", "wb") as f:
+with open(f"{saving_path}/accuracies_per_epoch.pkl", "wb") as f:
     pickle.dump(accuracies_per_epoch, f)

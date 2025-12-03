@@ -389,7 +389,8 @@ class Model(nn.Module):
         self.fc = nn.Linear(d_model * afr_reduced_cnn_size, num_classes)
 
     def forward(self, x):
-        x = torch.reshape(x, [1, 128, 440])
+        # x = torch.reshape(x, [16, 128, 440])
+        x = x.squeeze()
         x_feat = self.mrcnn(x)
         encoded_features = self.tce(x_feat)
         encoded_features = encoded_features.contiguous().view(
