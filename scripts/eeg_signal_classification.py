@@ -2,18 +2,20 @@
 
 import importlib
 import os
-import pickle
 from pathlib import Path
+
 
 import torch
 
 from eeg_visual_classification.utils.lib import (
     create_parser,
-    delete_files,
     extract_model_options,
     get_dataloaders,
     get_model_hash,
+    save_checkpoint,
+    load_checkpoint,
 )
+from ..models import MODEL_REGISTRY
 
 torch.utils.backcompat.broadcast_warning.enabled = True  # type: ignore
 
@@ -32,8 +34,11 @@ DATA_DIR = Path(os.getenv("EEG_DATA_DIR", PKG_ROOT / "data" / "block"))
 # Parse arguments
 opt = create_parser().parse_args()
 DATASET_TYPE = opt.eeg_dataset.split("/")[3].split(".")[0]
+model_options = extract_model_options(opt.model_params)
+MODEL_HASH = get_model_hash(opt.model_type, model_options)
 SAVING_PATH = os.path.join(
-    MODELS_DIR, f"{opt.model_type}_{DATASET_TYPE}_{opt.experiment_name}"
+    MODELS_DIR,
+    f"{opt.model_type}_{MODEL_HASH}_{opt.experiment_name}/{DATASET_TYPE}",
 )
 print(opt)
 if not os.path.exists(SAVING_PATH):
@@ -42,11 +47,12 @@ else:
     exit("Experiment name already exists. Choose another name.")
 
 # Create model
-model_options = extract_model_options(opt.model_params)
-# Create discriminator model/optimizer
-module = importlib.import_module("models." + opt.model_type)
-model = module.Model(**model_options)
-MODEL_HASH = get_model_hash(opt.model_type, model_options)
+# module = importlib.import_module("models." + opt.model_type)
+# model = module.Model(**model_options)
+ModelClass = MODEL_REGISTRY.get(opt.model_type)
+if ModelClass is None:
+    raise ValueError(f"Model {opt.model_type} not found in MODEL_REGISTRY.")
+model = ModelClass(**model_options)
 optimizer = getattr(torch.optim, opt.optim)(model.parameters(), lr=opt.learning_rate)
 
 # Setup CUDA
@@ -55,7 +61,11 @@ if not opt.no_cuda:
     print("Copied to CUDA")
 
 if opt.pretrained_net != "":
-    model = torch.load(opt.pretrained_net)
+    # model = torch.load(opt.pretrained_net)
+    model, _ = load_checkpoint(
+        opt.pretrained_net,
+        device="cuda",
+    )
     print(model)
 
 # Load data
@@ -150,35 +160,31 @@ for epoch in range(1, opt.epochs + 1):
     )
 
     if len(accuracies_per_epoch["val"]) == 0 or VA > max(accuracies_per_epoch["val"]):
-        delete_files(
-            f"{SAVING_PATH}/{opt.model_type}__subject{opt.subject}_epoch_*.pth"
-        )
-        torch.save(
+        # delete_files(
+        #     f"{SAVING_PATH}/{opt.model_type}__subject{opt.subject}_epoch_*.pth"
+        # )
+        # torch.save(
+        #     model,
+        #     f"{SAVING_PATH}/{opt.model_type}__subject{opt.subject}_epoch_{epoch}.pth",
+        # )
+        save_checkpoint(
             model,
-            f"{SAVING_PATH}/{opt.model_type}__subject{opt.subject}_epoch_{epoch}.pth",
+            optimizer,
+            epoch,
+            SAVING_PATH,
+            opt,
+            MODEL_HASH,
+            model_options,
+            dataset_options,
+            losses_per_epoch,
+            accuracies_per_epoch,
+            TrL,
+            TrA,
+            VL,
+            VA,
+            TeL,
+            TeA,
         )
-        checkpoint = {
-            "epoch": epoch,
-            "model_state_dict": model.state_dict(),
-            "optimizer_state_dict": optimizer.state_dict(),
-            "model_hash": MODEL_HASH,
-            "model_options": model_options,
-            "dataset_options": dataset_options,
-            "metrics": {
-                "train_loss": TrL,
-                "train_accuracy": TrA,
-                "val_loss": VL,
-                "val_accuracy": VA,
-                "test_loss": TeL,
-                "test_accuracy": TeA,
-            },
-            "experiment_name": opt.experiment_name,
-            "metrics_per_epoch": {
-                "losses_per_epoch": losses_per_epoch,
-                "accuracies_per_epoch": accuracies_per_epoch,
-            },
-            "state_dict": model.state_dict(),
-        }
 
     losses_per_epoch["train"].append(TrL)
     losses_per_epoch["val"].append(VL)
@@ -188,9 +194,9 @@ for epoch in range(1, opt.epochs + 1):
     accuracies_per_epoch["test"].append(TeA)
 
 
-# save the loss and accuracy across all epochs
-with open(f"{SAVING_PATH}/losses_per_epoch.pkl", "wb") as f:
-    pickle.dump(losses_per_epoch, f)
+# # save the loss and accuracy across all epochs
+# with open(f"{SAVING_PATH}/losses_per_epoch.pkl", "wb") as f:
+#     pickle.dump(losses_per_epoch, f)
 
-with open(f"{SAVING_PATH}/accuracies_per_epoch.pkl", "wb") as f:
-    pickle.dump(accuracies_per_epoch, f)
+# with open(f"{SAVING_PATH}/accuracies_per_epoch.pkl", "wb") as f:
+#     pickle.dump(accuracies_per_epoch, f)

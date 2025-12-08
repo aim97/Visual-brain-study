@@ -7,7 +7,7 @@
 import torch
 import torch.nn as nn
 
-from models.layers import *
+from .layers import *
 
 
 class FeaturesExtractor(nn.Module):

@@ -6,100 +6,115 @@ import torch
 from torch.utils.data import DataLoader
 from pathlib import Path
 import logging
+import pandas as pd
 
-from ..utils.ValidationOnlySplitter import ValidationOnlySplitter
-from ..utils.EEGDataset import EEGDataset
+from ..utils import EEGDataset, load_checkpoint, ValidationOnlySplitter, get_model_hash
 
-
-orig_torch_load = torch.load
-
-
-def torch_wrapper(*args, **kwargs):
-    logging.warning(
-        "[comfyui-unsafe-torch] I have unsafely patched `torch.load`.  The `weights_only` option of `torch.load` is forcibly disabled."
-    )
-    kwargs["weights_only"] = False
-
-    return orig_torch_load(*args, **kwargs)
+# orig_torch_load = torch.load
 
 
-torch.load = torch_wrapper
+# def torch_wrapper(*args, **kwargs):
+#     logging.warning(
+#         "[comfyui-unsafe-torch] I have unsafely patched `torch.load`.  The `weights_only` option of `torch.load` is forcibly disabled."
+#     )
+#     kwargs["weights_only"] = False
 
-NODE_CLASS_MAPPINGS = {}
-__all__ = ["NODE_CLASS_MAPPINGS"]
+#     return orig_torch_load(*args, **kwargs)
+
+
+# torch.load = torch_wrapper
+
+# NODE_CLASS_MAPPINGS = {}
+# __all__ = ["NODE_CLASS_MAPPINGS"]
 
 PKG_ROOT = Path(__file__).resolve().parents[1]  # .../eeg_visual_classification
 MODELS_DIR = PKG_ROOT / "stored models"
 DATA_DIR = PKG_ROOT / "data" / "block"
 
 
-datasets = [
-    "eeg_signals_raw_with_mean_std",
-    "eeg_55_95_std",
-    "eeg_14_70_std",
-    "eeg_5_95_std",
-]
-
-
-def get_pretrained_model_paths(model_name):
-    model_path_pattern = f"{MODELS_DIR}/*{model_name}*/{model_name}_*.pth"
-
-    # find all files matching the pattern
-    model_files = glob.glob(model_path_pattern)
-
-    acc_files = [
-        os.path.join(os.path.dirname(model_file), "accuracies_per_epoch.pkl")
-        for model_file in model_files
-    ]
-
-    # group all models trained on the same dataset version together
-    dataset_models = {dataset: [] for dataset in datasets}
-    for model_file, acc_file in zip(model_files, acc_files):
-        dataset_name = (
-            model_file.split("\\")[-2][len(model_name) + 1 :].split("std")[0] + "std"
-        )
-        if dataset_name in dataset_models:
-            dataset_models[dataset_name].append((model_file, acc_file))
-        else:
-            print(
-                f"Warning: Dataset {dataset_name} not recognized in model file {model_file}"
+def get_pretrained_model_paths(model_names, dataset_names):
+    models = []
+    for model_name in model_names:
+        for dataset_name in dataset_names:
+            model_path_pattern = (
+                f"{MODELS_DIR}/{model_name}*/{dataset_name}/{model_name}_*.pth"
             )
 
-    return dataset_models
+            # find all files matching the pattern
+            model_files = glob.glob(model_path_pattern)
+
+            models.extend([(model_name, dataset_name, f) for f in model_files])
+    return models
 
 
-def get_max_val_acc(acc_file):
-    """Load accuracy data from a JSON file.
+def get_model_path_by_hash(model_hash, dataset_names):
+    model_path_pattern = f"{MODELS_DIR}/*{model_hash}*/*/*.pth"
+    model_path_pattern = model_path_pattern.replace("\\", "\\/")
 
-    Args:
-        acc_file (str): Path to the accuracy JSON file.
-    Returns:
-
-    """
-    with open(acc_file, "rb") as f:
-        accuracy_data = pickle.load(f)
-        acc = max(accuracy_data["val"])
-        if type(acc) == tuple:
-            acc = acc[0]
-    return acc
-
-
-def get_best_model_paths(dataset_models):
-    # get the paths of the best models for each dataset
-    best_model_paths = {dataset: (None, 0) for dataset in datasets}
-    for dataset, models in dataset_models.items():
-        max_acc = -1
-        best_model = None
-        for model_file, acc_file in models:
-            acc = get_max_val_acc(acc_file)
-            if acc > max_acc:
-                max_acc = acc
-                best_model = model_file
-        best_model_paths[dataset] = (best_model, max_acc)
-    return best_model_paths
+    # print(f"Searching for models with pattern: {model_path_pattern}")
+    model_files = glob.glob(model_path_pattern)
+    model_datasets = {}
+    for dataset_name in dataset_names:
+        model_datasets[dataset_name] = []
+        for model_file in model_files:
+            # print(f"Checking model file: {model_file}")
+            if dataset_name in model_file:
+                model_datasets[dataset_name].append(model_file)
+    return model_datasets
 
 
-def evaluate_model(model_type, model_path, dataset_path):
+def load_checkpoint_data(dataset_name, model_file):
+    # load the checkpoint data
+    model, checkpoint = load_checkpoint(model_file)
+    ret = {
+        "model": model,
+        "checkpoint": checkpoint,
+        "acc": checkpoint["metrics"]["val_accuracy"],
+        "model_options": checkpoint["model_options"],
+        "epoch": checkpoint["epoch"],
+        "dataset_name": dataset_name,
+        "model_file": model_file,
+        "hash": checkpoint["model_hash"],
+    }
+    return ret
+
+
+def find_best_models(dataset_models):
+    best_models = {}
+    for dataset_name in dataset_models:
+        model_files = dataset_models[dataset_name]
+        best_acc = -1.0
+        best_model_data = None
+        for model_file in model_files:
+            model_data = load_checkpoint_data(dataset_name, model_file)
+            acc = model_data["acc"]
+            print(f"Model: {model_file}, Accuracy: {acc}")
+            if acc > best_acc:
+                best_acc = acc
+                best_model_data = model_data
+        if best_model_data is not None:
+            best_models[dataset_name] = best_model_data
+
+    print("Best models found for datasets:")
+    for dataset_name in best_models:
+        print(f"  {dataset_name}: {best_models[dataset_name]['model_file']}")
+    return best_models
+
+
+def get_models_coverage(model_names, datasets, models):
+    v = {
+        model_name: {dataset_name: 0 for dataset_name in datasets}
+        for model_name in model_names
+    }
+
+    df = pd.DataFrame.from_dict(v, orient="index")
+    for model_name, dataset_name, _ in models:
+        df.at[model_name, dataset_name] = df.at[model_name, dataset_name] + 1
+
+    return df
+
+
+def evaluate_model(model, model_type, dataset_path):
     dataset = EEGDataset(
         {
             "eeg_dataset": dataset_path,
@@ -122,8 +137,6 @@ def evaluate_model(model_type, model_path, dataset_path):
 
     # load the model
     device = "cuda" if torch.cuda.is_available() else "cpu"
-
-    model = torch.load(model_path, map_location="cpu", weights_only=True)
     model.to(device)
     model.eval()
 
@@ -195,44 +208,52 @@ def evaluate_model(model_type, model_path, dataset_path):
     return per_subject_accuracy, confusion.cpu().numpy()  # type: ignore
 
 
-# take model name as command line argument
-parser = argparse.ArgumentParser()
-parser.add_argument(
-    "-mt",
-    "--model-type",
-    type=str,
-    required=True,
-    help="Name of the model to analyze bias for",
-)
+if __name__ == "__main__":
+    model_type = "BrainDecoder3D"
+    model_options = {}
+    hash = get_model_hash(model_type, model_options)
+    datasets = [
+        "eeg_signals_raw_with_mean_std",
+        "eeg_55_95_std",
+        "eeg_14_70_std",
+        "eeg_5_95_std",
+    ]
 
-opt = parser.parse_args()
-model_name = opt.model_type
+    print(f"Looking for models with hash: {hash}")
 
-dataset_models = get_pretrained_model_paths(model_name)
+    models = get_model_path_by_hash(hash, datasets)
 
-# display the number of models found for each dataset
-for dataset, models in dataset_models.items():
-    print(f"Dataset: {dataset}, Number of models found: {len(models)}")
+    print(models)
+    best_models = find_best_models(models)
 
-best_model_paths = get_best_model_paths(dataset_models)
+    for dataset_name, model_data in best_models.items():
+        print(f"Evaluating model for dataset {dataset_name}")
+        if model_data is None:
+            print(f"No model found for dataset {dataset_name}")
+            continue
+        print(f"Evaluating model for dataset {dataset_name}")
+        model = model_data["model"]
+        subject_acc, conf = evaluate_model(
+            model,
+            model_type,
+            os.path.join(PKG_ROOT, "data", "block", f"{dataset_name}.pth"),
+        )
 
-# display the best model paths and their accuracies
-for dataset, (model_path, acc) in best_model_paths.items():
-    print(f"Dataset: {dataset}")
-    print(f"Best Model Path: {model_path}")
-    print(f"Max Validation Accuracy: {acc:.4f}\n")
+        print(f"Dataset: {dataset_name}")
+        print(f"Model Type: {model_type}")
+        print(f"Model Hash: {model_data['hash']}")
+        print(f"Per-subject accuracy: {subject_acc}")
+        print(f"Confusion Matrix:\n{conf}")
 
-# evaluate each best model and display per-subject accuracies
-for dataset, (model_path, acc) in best_model_paths.items():
-    if model_path is None:
-        print(f"No model found for dataset {dataset}, skipping evaluation.")
-        continue
-    print(f"Evaluating model for dataset {dataset} with path {model_path}")
-    dataset_path = f"{DATA_DIR}/{dataset}.pth"
-    per_subject_accuracy, confusion = evaluate_model(
-        model_name, model_path, dataset_path
-    )
-    print(f"Per-subject accuracies for dataset {dataset}:")
-    for subject, accuracy in per_subject_accuracy.items():
-        print(f"Subject {subject}: Accuracy {accuracy:.4f}")
-    print(f"Confusion Matrix for dataset {dataset}:\n{confusion}\n")
+        # save conf matrix as csv
+        conf_df = pd.DataFrame(
+            conf,
+            index=[f"True_{i}" for i in range(conf.shape[0])],
+            columns=[f"Pred_{i}" for i in range(conf.shape[1])],
+        )
+        conf_csv_path = (
+            f"confusion_matrix_{dataset_name}_{model_type}_{model_data['hash']}.csv"
+        )
+        conf_df.to_csv(conf_csv_path)
+        print(f"Confusion matrix saved to {conf_csv_path}")
+    print("Done")

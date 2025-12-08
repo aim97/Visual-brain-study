@@ -1,5 +1,5 @@
 import torch.nn as nn
-from ..models.visualModels import ViT, SimpleEEGCNN
+from ..models.visualModels import ViT, SimpleEEGCNN, ResNet18Wrapper
 from ..models.VisualTransforms import LogPowerSpectrum, LogWaveletCWT
 import numpy as np
 from typing import Optional, Literal
@@ -35,15 +35,14 @@ class Model(nn.Module):
                 in_channels=128,
                 patch_dim=batch_dim,
                 num_classes=40,
-                dim=32,
-                blocks=1,
+                dim=128,
+                blocks=2,
                 heads=32,
-                dim_linear_block=32,
+                dim_linear_block=128,
                 classification=True,
                 classification_structure=True,
             )
         elif core_model == "ResNet18":
-            from models.visualModels import ResNet18Wrapper
 
             self.visual_model = ResNet18Wrapper(num_classes=40)
         elif core_model == "SimpleEEGCNN":
@@ -62,5 +61,4 @@ class Model(nn.Module):
         if self.resize is not None:
             x = self.resize(x)
         x = self.visual_model(x)
-
         return x

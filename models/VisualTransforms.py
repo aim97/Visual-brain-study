@@ -1,39 +1,39 @@
 import torch
 import torch.nn as nn
-import math
 import pandas as pd
 import torch.nn.functional as F
 from .meta.electrode_names import channels
 
 
 class LogWaveletCWT(nn.Module):
-    def __init__(self, scales, wavelet='morl', eps=1e-8, mean_normalize=True):
+    def __init__(self, scales, wavelet="morl", eps=1e-8, mean_normalize=True):
         super().__init__()
         self.scales = scales
         self.eps = eps
         self.mean_normalize = mean_normalize
-        
+
         # Precompute wavelet kernels
         kernels = []
         length = 128  # kernel length (choose based on signal duration)
-        t = torch.linspace(-length/2, length/2, steps=length)
+        t = torch.linspace(-length / 2, length / 2, steps=length)
         for s in scales:
-            kernel = torch.exp(-t**2 / (2*s**2)) * torch.cos(5*t/s)  # Morlet
+            kernel = torch.exp(-(t**2) / (2 * s**2)) * torch.cos(5 * t / s)  # Morlet
             kernel = kernel / kernel.norm()  # normalize
             kernels.append(kernel)
         kernels = torch.stack(kernels).unsqueeze(1)  # (num_scales, 1, length)
-        self.register_buffer('kernels', kernels)
+        self.register_buffer("kernels", kernels)
 
     def forward(self, x):
         B, C, T = x.shape
-        x = x.view(B*C, 1, T)
-        coeffs = F.conv1d(x, self.kernels, padding=self.kernels.size(-1)//2)
+        x = x.view(B * C, 1, T)
+        coeffs = F.conv1d(x, self.kernels, padding=self.kernels.size(-1) // 2)
         coeffs = coeffs.view(B, C, len(self.scales), coeffs.size(-1))
         log_power = torch.log(coeffs.abs().pow(2) + self.eps)
         if self.mean_normalize:
             log_power = log_power - log_power.mean()
         return log_power
-      
+
+
 class LogPowerSpectrum(nn.Module):
     """
     A PyTorch layer that computes the log power spectrum via STFT for batched signals.
@@ -47,24 +47,27 @@ class LogPowerSpectrum(nn.Module):
 
     Parameters mirror SciPy stft-style args you used.
     """
+
     def __init__(
         self,
         fs: int = 1000,
-        nperseg: int = 64,
-        noverlap: int = int(64 * 0.9),
-        nfft: int = 64,
-        window: str = "hamming",   # or a precomputed torch.Tensor of length nperseg
-        center: bool = False,      # SciPy pads by default; set to False to be close to your call
+        nperseg: int = 128,
+        noverlap: int = 112,
+        nfft: int = 128,
+        window: str = "hamming",  # or a precomputed torch.Tensor of length nperseg
+        center: bool = False,  # SciPy pads by default; set to False to be close to your call
         pad_mode: str = "reflect",
         eps: float = 1e-8,
         mean_normalize: bool = True,
-        per_sample: bool = False   # False => global mean (matches your function)
+        per_sample: bool = False,  # False => global mean (matches your function)
     ):
         super().__init__()
-        
+
         hop_length = nperseg - noverlap
         if hop_length <= 0:
-            raise ValueError(f"hop_length must be > 0, got nperseg={nperseg}, noverlap={noverlap}")
+            raise ValueError(
+                f"hop_length must be > 0, got nperseg={nperseg}, noverlap={noverlap}"
+            )
 
         self.fs = fs
         self.nperseg = nperseg
@@ -81,7 +84,9 @@ class LogPowerSpectrum(nn.Module):
         if isinstance(window, torch.Tensor):
             win = window
             if win.numel() != nperseg:
-                raise ValueError(f"Provided window has length {win.numel()}, expected {nperseg}.")
+                raise ValueError(
+                    f"Provided window has length {win.numel()}, expected {nperseg}."
+                )
         else:
             w = window.lower()
             if w == "hamming":
@@ -90,7 +95,9 @@ class LogPowerSpectrum(nn.Module):
             elif w == "hann":
                 win = torch.hann_window(nperseg, periodic=True)
             else:
-                raise ValueError(f"Unsupported window '{window}'. Use 'hamming', 'hann', or a Tensor.")
+                raise ValueError(
+                    f"Unsupported window '{window}'. Use 'hamming', 'hann', or a Tensor."
+                )
         self.register_buffer("window", win)
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
@@ -99,7 +106,9 @@ class LogPowerSpectrum(nn.Module):
         returns: (..., F, K) log power spectrum (optionally mean-normalized)
         """
         if x.ndim not in (2, 3):
-            raise ValueError(f"Expected input of shape (B,T) or (B,C,T); got {tuple(x.shape)}")
+            raise ValueError(
+                f"Expected input of shape (B,T) or (B,C,T); got {tuple(x.shape)}"
+            )
 
         # Ensure window dtype/device match input
         window = self.window.to(dtype=x.dtype, device=x.device)
@@ -107,7 +116,7 @@ class LogPowerSpectrum(nn.Module):
             # (B, C, T) -> (B*C, T)
             B, C, T = x.shape
             x = x.reshape(B * C, T)
-            
+
         # torch.stft supports batched inputs: (..., time) -> (..., freq, frames)
         Z = torch.stft(
             x,
@@ -118,11 +127,11 @@ class LogPowerSpectrum(nn.Module):
             center=self.center,
             pad_mode=self.pad_mode,
             normalized=False,
-            return_complex=True,   # complex tensor: (..., F, K)
+            return_complex=True,  # complex tensor: (..., F, K)
         )
 
         # Power and log-power
-        power = Z.abs().pow(2)                # (..., F, K)
+        power = Z.abs().pow(2)  # (..., F, K)
         log_power = torch.log(power + self.eps)
 
         # Mean normalization (default: global to match your function)
@@ -134,7 +143,7 @@ class LogPowerSpectrum(nn.Module):
                 # global mean over the whole batch/tensor (your original behavior)
                 mean = log_power.mean()
             log_power = log_power - mean
-            
+
         # fix shape to (..., F, K)
         log_power = log_power.view(B, C, log_power.size(-2), log_power.size(-1))
 
@@ -151,34 +160,38 @@ class LogPowerSpectrum(nn.Module):
 
     def frame_times(self, num_frames: int) -> torch.Tensor:
         """Helper to get time axis (sec) given output frames."""
-        return torch.arange(num_frames, device=self.window.device) * (self.hop_length / self.fs)
-  
-import torch
-import torch.nn as nn
-import pandas as pd
+        return torch.arange(num_frames, device=self.window.device) * (
+            self.hop_length / self.fs
+        )
+
 
 class EEGScalpMap(nn.Module):
     """
     Map (B, C, T) to (B, T, H, W) using a (H, W) CSV template of channel labels.
     Empty cells (or labels not in `electrodes`) become zeros in the output.
     """
-    def __init__(self, electrode_positions_csv: str, electrodes = channels, dtype=torch.float32):
+
+    def __init__(
+        self, electrode_positions_csv: str, electrodes=channels, dtype=torch.float32
+    ):
         super().__init__()
         if electrodes is None or len(electrodes) == 0:
-            raise ValueError("`electrodes` (list of channel names in the same order as x[:, :, :]) is required.")
+            raise ValueError(
+                "`electrodes` (list of channel names in the same order as x[:, :, :]) is required."
+            )
         self.electrodes = list(electrodes)
         self.dtype = dtype
 
         # Load CSV and convert each cell to a channel index (or -1)
         df = pd.read_csv(electrode_positions_csv, header=None).fillna("")
-        df = df.applymap(lambda x: x.strip() if isinstance(x, str) else x)
+        df = df.map(lambda x: x.strip() if isinstance(x, str) else x)
 
         def to_idx(cell):
             if isinstance(cell, str) and cell in self.electrodes:
                 return self.electrodes.index(cell)
             return -1
 
-        idx_grid = df.applymap(to_idx).values  # (H, W) int array
+        idx_grid = df.map(to_idx).values  # (H, W) int array
         idx_grid = torch.as_tensor(idx_grid, dtype=torch.long)
         self.register_buffer("idx_grid", idx_grid, persistent=False)
         self.H, self.W = idx_grid.shape
@@ -207,8 +220,8 @@ class EEGScalpMap(nn.Module):
         # 4) Match dims for gather:
         #    - Lift data to 5D so we can gather along channel dim=2
         #      x5d: (B, T, C+1, H, W) by unsqueezing and expanding
-        x5d = x_bt_pad.unsqueeze(-1).unsqueeze(-1)                    # (B, T, C+1, 1, 1)
-        x5d = x5d.expand(B, T, C + 1, H, W)                           # (B, T, C+1, H, W)
+        x5d = x_bt_pad.unsqueeze(-1).unsqueeze(-1)  # (B, T, C+1, 1, 1)
+        x5d = x5d.expand(B, T, C + 1, H, W)  # (B, T, C+1, H, W)
 
         #    - Make indices 5D with a singleton channel dim: (B, T, 1, H, W)
         idx5d = idx_safe.view(1, 1, 1, H, W).expand(B, T, 1, H, W)

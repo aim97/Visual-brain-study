@@ -1,9 +1,25 @@
+"""_summary_
+Utility functions for EEG visual classification project."""
+
 import glob
 import os
 import argparse
+from pathlib import Path
+from datetime import datetime
+import platform
+import random
+import hashlib
+
+import torch
+from torch.utils.data import DataLoader
+import numpy as np
+
 from .EEGDataset import EEGDataset
 from .Splitter import Splitter
-from torch.utils.data import DataLoader
+from ..models import MODEL_REGISTRY
+
+readRecord = lambda data, recordNo: data["dataset"][recordNo]["eeg"].numpy()
+readSignal = lambda data, recordNo, channelNo: readRecord(data, recordNo)[channelNo]
 
 
 def delete_files(pattern):
@@ -182,4 +198,131 @@ def get_model_hash(model_name, model_params):
         [f"{key}={value}" for key, value in sorted(model_params.items())]
     )
     compressed = f"{model_name}-{param_str}"
-    return str(abs(hash(compressed)))
+    return hashlib.sha256(compressed.encode()).hexdigest()
+
+
+def to_float(x):
+    # Convert tensors/ndarrays/nums to Python float
+    try:
+        return float(x.item())  # 0-D torch.tensor
+    except AttributeError:
+        try:
+            return float(x)  # Python/numpy scalar
+        except Exception:
+            return x  # leave as-is (e.g., list of floats)
+
+
+def save_checkpoint(
+    model,
+    optimizer,
+    epoch: int,
+    SAVING_PATH: str | Path,
+    opt,
+    MODEL_HASH: str,
+    model_options: dict,
+    dataset_options: dict,
+    losses_per_epoch,
+    accuracies_per_epoch,
+    TrL,
+    TrA,
+    VL,
+    VA,
+    TeL,
+    TeA,
+    lr_scheduler=None,
+    amp_scaler=None,
+):
+    save_dir = Path(SAVING_PATH)
+    save_dir.mkdir(parents=True, exist_ok=True)
+
+    # Ensure metrics are floats
+    TrL = to_float(TrL)
+    TrA = to_float(TrA)
+    VL = to_float(VL)
+    VA = to_float(VA)
+    TeL = to_float(TeL)
+    TeA = to_float(TeA)
+
+    # Optional: convert per-epoch metrics to plain lists of floats
+    losses_per_epoch = [to_float(v) for v in losses_per_epoch]
+    accuracies_per_epoch = [to_float(v) for v in accuracies_per_epoch]
+
+    checkpoint = {
+        "schema_version": 1,
+        "date": datetime.utcnow().isoformat(timespec="seconds") + "Z",
+        "epoch": epoch,
+        "model_name": opt.model_type,
+        "experiment_name": getattr(opt, "experiment_name", None),
+        "subject": getattr(opt, "subject", None),
+        # Reconstruction inputs (ensure these are sufficient to init the model)
+        "model_options": model_options,  # constructor args / hyperparams
+        "dataset_options": dataset_options,
+        # Core states
+        "model_state_dict": model.state_dict(),
+        "optimizer_state_dict": (
+            optimizer.state_dict() if optimizer is not None else None
+        ),
+        "lr_scheduler_state_dict": lr_scheduler.state_dict() if lr_scheduler else None,
+        "amp_scaler_state_dict": amp_scaler.state_dict() if amp_scaler else None,
+        # Metrics snapshot
+        "metrics": {
+            "train_loss": TrL,
+            "train_accuracy": TrA,
+            "val_loss": VL,
+            "val_accuracy": VA,
+            "test_loss": TeL,
+            "test_accuracy": TeA,
+        },
+        "metrics_per_epoch": {
+            "losses_per_epoch": losses_per_epoch,
+            "accuracies_per_epoch": accuracies_per_epoch,
+        },
+        # Provenance
+        "model_hash": MODEL_HASH,
+        "env": {
+            "torch_version": torch.__version__,
+            "python_version": platform.python_version(),
+            "cuda_is_available": torch.cuda.is_available(),
+            "cuda_version": torch.version.cuda if torch.version.cuda else None,
+            "device": "cuda" if torch.cuda.is_available() else "cpu",
+        },
+        # Optional: RNG states for perfect resume
+        "torch_rng_state": torch.get_rng_state().tolist(),
+        "numpy_rng_state": np.random.get_state(),  # requires numpy
+        "python_rng_state": random.getstate(),
+    }
+
+    # Canonical filename, avoid spaces
+    fname = f"{opt.model_type}__{MODEL_HASH}.pth"
+    target = save_dir / fname
+    tmp = save_dir / (fname + ".tmp")
+
+    # Atomic save
+    torch.save(checkpoint, tmp)
+    tmp.replace(target)
+
+    print(f"Saved checkpoint to: {target}")
+
+    return target
+
+
+def load_checkpoint(ckpt_path: str | Path, device: str = "cpu"):
+
+    ckpt = torch.load(str(ckpt_path), map_location=device, weights_only=False)
+
+    required = ["model_name", "model_state_dict", "model_options"]
+    for k in required:
+        if k not in ckpt or ckpt[k] is None:
+            raise ValueError(f"Checkpoint missing '{k}': {ckpt_path}")
+
+    model_name = ckpt["model_name"]
+    ModelClass = MODEL_REGISTRY[model_name]
+    model = ModelClass(**ckpt["model_options"])
+
+    missing, unexpected = model.load_state_dict(ckpt["model_state_dict"], strict=False)
+    if missing or unexpected:
+        print(f"[warn] Missing keys: {missing}\n[warn] Unexpected keys: {unexpected}")
+
+    model.to(device)
+    model.eval()
+    return model, ckpt
