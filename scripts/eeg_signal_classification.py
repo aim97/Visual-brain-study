@@ -1,12 +1,11 @@
 """some summary"""
 
-import importlib
 import os
 from pathlib import Path
 
 
 import torch
-
+import pandas as pd
 from eeg_visual_classification.utils.lib import (
     create_parser,
     extract_model_options,
@@ -82,8 +81,10 @@ dataset_options = {
 loaders = get_dataloaders(dataset_options)
 
 # initialize training,validation, test losses and accuracy list
-losses_per_epoch = {"train": [], "val": [], "test": []}
-accuracies_per_epoch = {"train": [], "val": [], "test": []}
+losses_per_epoch = {split: [] for split in loaders.keys()}
+# {"train": [], "val": [], "test": []}
+accuracies_per_epoch = {split: [] for split in loaders.keys()}
+# {"train": [], "val": [], "test": []}
 
 best_accuracy = 0
 best_accuracy_val = 0
@@ -95,19 +96,22 @@ correct_labels = []
 
 for epoch in range(1, opt.epochs + 1):
     # Initialize loss/accuracy variables
-    losses = {"train": 0.0, "val": 0.0, "test": 0.0}
-    accuracies = {"train": 0, "val": 0, "test": 0}
-    counts = {"train": 0, "val": 0, "test": 0}
+    losses = {split: 0.0 for split in loaders.keys()}
+    accuracies = {split: 0.0 for split in loaders.keys()}
+    counts = {split: 0 for split in loaders.keys()}
     # Adjust learning rate for SGD
-    if opt.optim == "SGD":
+    if epoch % opt.learning_rate_decay_every == 0:
         lr = max(
             opt.learning_rate
             * (opt.learning_rate_decay_by ** (epoch // opt.learning_rate_decay_every)),
             opt.learning_rate_decay_limit,
         )
+        print(f"Learning rate dropped to : {lr}")
         for param_group in optimizer.param_groups:
             param_group["lr"] = lr
     # Process each split
+    class_list = list(range(40))
+    conf_mat = pd.DataFrame(0, index=class_list, columns=class_list, dtype=float)
     for split in loaders.keys():
         # Set network mode
         if split == "train":
@@ -134,6 +138,15 @@ for epoch in range(1, opt.epochs + 1):
             accuracy = correct / input_eeg.data.size(0)
             accuracies[split] += accuracy
             counts[split] += 1
+
+            # compute confusion matrix
+            pred_list = pred.cpu().tolist()
+            target_list = target.cpu().tolist()
+            for i, j in zip(target_list, pred_list):
+                conf_mat.loc[i, j] += 1
+
+            # print(pred)
+            # print(target.data)
             # Backward and optimize
             if split == "train":
                 optimizer.zero_grad()
@@ -152,6 +165,7 @@ for epoch in range(1, opt.epochs + 1):
     VA = accuracies["val"] / counts["val"]
     TeL = losses["test"] / counts["test"]
     TeA = accuracies["test"] / counts["test"]
+    conf_mat = conf_mat.div(conf_mat.sum(axis=1), axis=0)
 
     print(
         f"Model: {opt.model_type} - Subject {opt.subject} - Time interval: [{opt.time_low}-{opt.time_high}] "
@@ -184,6 +198,7 @@ for epoch in range(1, opt.epochs + 1):
             VA,
             TeL,
             TeA,
+            conf_mat,
         )
 
     losses_per_epoch["train"].append(TrL)
