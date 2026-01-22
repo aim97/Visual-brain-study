@@ -3,4 +3,5 @@ build
 *.pyc
 
 stored models
+semantic models
 trashcan

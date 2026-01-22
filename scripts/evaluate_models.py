@@ -51,8 +51,7 @@ def inspect_models(models_dict, input_size=(1, 128, 440), device="cpu"):
     for name, model in models_dict.items():
         params = count_parameters(model)
         time_taken = evaluate_model(model, input_size, device)
-        model_size = params * 4 / (1024**2)
-        results.append((name, model_size, time_taken))
+        results.append((name, params, time_taken))
 
     # sort by parameters
     results.sort(key=lambda x: x[1])
@@ -84,6 +83,7 @@ if __name__ == "__main__":
         "EEGConformer": models.EEGConformer(),
         "BrainDecoder": models.BrainDecoder(),
         "BrainDecoder3D": models.BrainDecoder3D(),
+        "SpectralBrainDecoder3D": models.SpectralBrainDecoder3D(),
         # "blstm": models.blstm(),
         # "lstm": models.lstm(),
     }

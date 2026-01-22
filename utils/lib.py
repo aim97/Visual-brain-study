@@ -13,13 +13,155 @@ import hashlib
 import torch
 from torch.utils.data import DataLoader
 import numpy as np
+import pandas as pd
+import matplotlib.pyplot as plt
+from sklearn.manifold import TSNE
+from sklearn.pipeline import Pipeline
+from sklearn.preprocessing import StandardScaler
+from sklearn.svm import SVC
+from sklearn.metrics import accuracy_score, classification_report, confusion_matrix
+from sklearn.model_selection import train_test_split
+
 
 from .EEGDataset import EEGDataset
 from .Splitter import Splitter
 from ..models import MODEL_REGISTRY
 
+
+RANDOM_STATE = 42
+
 readRecord = lambda data, recordNo: data["dataset"][recordNo]["eeg"].numpy()
 readSignal = lambda data, recordNo, channelNo: readRecord(data, recordNo)[channelNo]
+
+
+def evaluate_clf(clf, X_test, y_test, class_names):
+    """
+    Print metrics and show confusion matrix (heatmap if seaborn available).
+    """
+    y_pred = clf.predict(X_test)
+    acc = accuracy_score(y_test, y_pred)
+    print(f"\n=== Test Accuracy: {acc:.4f} ===\n")
+    print("=== Classification Report ===")
+    print(
+        classification_report(y_test, y_pred, target_names=class_names, zero_division=0)
+    )
+
+
+def train_svm_rbf(X_train, y_train, random_state=RANDOM_STATE):
+    """
+    Build and fit a StandardScaler + RBF SVM pipeline.
+    """
+    clf = Pipeline(
+        [
+            ("scaler", StandardScaler()),
+            (
+                "svc",
+                SVC(
+                    C=1.0,
+                    kernel="rbf",
+                    gamma="scale",
+                    probability=False,
+                    random_state=random_state,
+                ),
+            ),
+        ]
+    )
+    clf.fit(X_train, y_train)
+    return clf
+
+
+def plot_tsne(
+    features: np.ndarray,
+    labels: np.ndarray,
+    class_names=None,
+    title: str = "t-SNE of EEG Representations",
+    figsize=(9, 7),
+    random_state: int = 42,
+    max_points: int | None = None,
+):
+    """
+    Visualize 2D t-SNE embedding of feature representations with class-colored scatter.
+
+    Parameters
+    ----------
+    features : np.ndarray
+        Array of shape [N, D] with feature vectors.
+    labels : np.ndarray
+        Array of shape [N] with integer class labels.
+    class_names : list[str] or None
+        Optional list of class names indexed by label; falls back to string labels.
+    title : str
+        Title for the plot.
+    figsize : tuple
+        Figure size in inches.
+    random_state : int
+        Random state for reproducibility.
+    max_points : int or None
+        If set, randomly subsample this many points for faster t-SNE on large datasets.
+
+    Returns
+    -------
+    None
+    """
+    if features.ndim != 2:
+        raise ValueError(f"`features` must be 2D [N, D], got shape {features.shape}")
+    if labels.ndim != 1 or labels.shape[0] != features.shape[0]:
+        raise ValueError("`labels` must be 1D and same length as `features` rows.")
+
+    # Optional subsampling to speed up t-SNE for large N
+    if max_points is not None and features.shape[0] > max_points:
+        rng = np.random.default_rng(random_state)
+        idx = rng.choice(features.shape[0], size=max_points, replace=False)
+        features = features[idx]
+        labels = labels[idx]
+
+    n_samples = features.shape[0]
+    # Perplexity must be < n_samples; pick a safe value (typical 5–50)
+    perplexity = max(5, min(30, (n_samples - 1) // 3))
+
+    tsne = TSNE(
+        n_components=2,
+        perplexity=perplexity,
+        learning_rate="auto",
+        init="pca",
+        random_state=random_state,
+    )
+    X_2d = tsne.fit_transform(features)
+
+    # Plot
+    plt.figure(figsize=figsize)
+    cmap = plt.get_cmap("tab20")
+    unique_labels = np.unique(labels)
+
+    # Fallback class names if not provided
+    if class_names is None:
+        try:
+            class_names = [str(c) for c in sorted(unique_labels)]
+        except Exception:
+            class_names = [str(c) for c in unique_labels]
+
+    for idx, lab in enumerate(unique_labels):
+        mask = labels == lab
+        name = (
+            class_names[lab]
+            if (isinstance(lab, (int, np.integer)) and lab < len(class_names))
+            else str(lab)
+        )
+        plt.scatter(
+            X_2d[mask, 0],
+            X_2d[mask, 1],
+            s=18,
+            alpha=0.85,
+            color=cmap(idx % 20),
+            label=name,
+        )
+
+    plt.legend(title="Classes", bbox_to_anchor=(1.05, 1), loc="upper left")
+    plt.title(title)
+    plt.xlabel("t-SNE 1")
+    plt.ylabel("t-SNE 2")
+    plt.tight_layout()
+    plt.show()
 
 
 def delete_files(pattern):
@@ -39,7 +181,10 @@ def delete_files(pattern):
             print(f"Error deleting {file}: {e}")
 
 
-def create_parser():
+def create_parser(
+    split_path_default=r"data\block\block_splits_by_image_all.pth",
+    default_eeg_dataset=r"data\block\eeg_55_95_std.pth",
+):
     parser = argparse.ArgumentParser(description="Template")
 
     # Dataset options
@@ -52,7 +197,7 @@ def create_parser():
     parser.add_argument(
         "-ed",
         "--eeg-dataset",
-        default=r"data\block\eeg_5_95_std.pth",
+        default=default_eeg_dataset,
         help="EEG dataset path",
     )  # 5-95Hz
     # parser.add_argument('-ed', '--eeg-dataset', default=r"data\block\eeg_14_70_std.pth", help="EEG dataset path") #14-70Hz
@@ -60,7 +205,7 @@ def create_parser():
     parser.add_argument(
         "-sp",
         "--splits-path",
-        default=r"data\block\block_splits_by_image_all.pth",
+        default=split_path_default,
         help="splits path",
     )  # All subjects
     # parser.add_argument('-sp', '--splits-path', default=r"data\block\block_splits_by_image_single.pth", help="splits path") #Single subject
@@ -126,7 +271,7 @@ def create_parser():
     parser.add_argument(
         "-lrde",
         "--learning-rate-decay-every",
-        default=10,
+        default=30,
         type=int,
         help="learning rate decay period",
     )
@@ -135,7 +280,7 @@ def create_parser():
     parser.add_argument(
         "-lrl",
         "--learning-rate-decay-limit",
-        default=0.00001,
+        default=0.0000001,
         type=float,
         help="learning rate decay limit",
     )
@@ -161,9 +306,19 @@ def create_parser():
     return parser
 
 
-def get_dataloaders(opt):
+def get_dataloaders(opt, splits=["train", "val", "test"]):
+    """Generates the dataset splits
+
+    Args:
+        opt (dict): dataset options
+        splits (list, optional): list of dataset split name. Defaults to ["train", "val", "test"].
+
+    Returns:
+        dict[str, DataLoader]: data loader for each split
+    """
     # Load dataset
     dataset = EEGDataset(opt)
+    is_semantic = "is_semantic" in opt
     # Create loaders
     loaders = {
         split: DataLoader(
@@ -172,24 +327,48 @@ def get_dataloaders(opt):
                 split_path=opt["splits_path"],
                 split_num=opt["split_num"],
                 split_name=split,
+                is_semantic=is_semantic,
+                combined_test_val=(
+                    True if "combined_test_val" not in opt else opt["combined_test_val"]
+                ),
+                return_full_record=(
+                    (split == "test" and opt["return_full_record"])
+                    if "return_full_record" in opt
+                    else False
+                ),
             ),
             batch_size=opt["batch_size"],
             drop_last=True,
             shuffle=True,
         )
-        for split in ["train", "val", "test"]
+        for split in splits
     }
     return loaders
 
 
+def parse_value(value):
+    if value.isdigit():
+        return int(value)
+    if value[0].isdigit():
+        return float(value)
+    if value[0] == "(" and value[-1] == ")":
+        # Parse tuple
+        items = value[1:-1].split(",")
+        return tuple(parse_value(item.strip()) for item in items)
+    if value[0] == "[" and value[-1] == "]":
+        # Parse list
+        items = value[1:-1].split(",")
+        return [parse_value(item.strip()) for item in items]
+    if value.lower() == "true":
+        return True
+    if value.lower() == "false":
+        return False
+    return value
+
+
 def extract_model_options(model_params):
     return {
-        key: (
-            int(value)
-            if value.isdigit()
-            else (float(value) if value[0].isdigit() else value)
-        )
-        for (key, value) in [x.split("=") for x in model_params]
+        key: parse_value(value) for (key, value) in [x.split("=") for x in model_params]
     }
 
 
@@ -212,6 +391,16 @@ def to_float(x):
             return x  # leave as-is (e.g., list of floats)
 
 
+def get_simple_conf(outputs, targets):
+    class_list = list(set(targets))
+    conf_mat = pd.DataFrame(0, index=class_list, columns=class_list, dtype=float)
+    # conf_mat = pd.DataFrame({cn: [0] * len(class_list) for cn in class_list})
+    for o, t in zip(outputs, targets):
+        conf_mat.loc[t, o] += 1
+    conf_mat = conf_mat.div(conf_mat.sum(axis=1), axis=0)
+    return conf_mat
+
+
 def save_checkpoint(
     model,
     optimizer,
@@ -229,6 +418,7 @@ def save_checkpoint(
     VA,
     TeL,
     TeA,
+    conf_mat=None,
     lr_scheduler=None,
     amp_scaler=None,
 ):
@@ -242,10 +432,6 @@ def save_checkpoint(
     VA = to_float(VA)
     TeL = to_float(TeL)
     TeA = to_float(TeA)
-
-    # Optional: convert per-epoch metrics to plain lists of floats
-    losses_per_epoch = [to_float(v) for v in losses_per_epoch]
-    accuracies_per_epoch = [to_float(v) for v in accuracies_per_epoch]
 
     checkpoint = {
         "schema_version": 1,
@@ -290,6 +476,7 @@ def save_checkpoint(
         "torch_rng_state": torch.get_rng_state().tolist(),
         "numpy_rng_state": np.random.get_state(),  # requires numpy
         "python_rng_state": random.getstate(),
+        "confusion_matrx": conf_mat,
     }
 
     # Canonical filename, avoid spaces

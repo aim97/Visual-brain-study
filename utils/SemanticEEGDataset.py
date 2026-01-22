@@ -6,7 +6,7 @@ import torch
 
 
 # Dataset class
-class EEGDataset:
+class SemanticEEGDataset:
     """EEG dataset
 
     Returns:
@@ -29,11 +29,10 @@ class EEGDataset:
         self.labels = loaded["labels"]
         self.images = loaded["images"]
 
+        # print dataset sizes
         print(f"EEG dataset size: {len(self.data)}")
         print(f"Labels size: {len(self.labels)}")
         print(f"Images size: {len(self.images)}")
-        self.semantics = loaded["semantics"] if "semantics" in loaded else None
-        print(f"Semantics size: {self.semantics}")
 
         # Compute size
         self.size = len(self.data)
@@ -52,12 +51,7 @@ class EEGDataset:
             eeg = eeg.t()
             eeg = eeg.view(1, 128, self.opt["time_high"] - self.opt["time_low"])
         # Get label
-        label = (
-            self.data[i]["label"]
-            if self.semantics is None
-            else self.data[i]["semantic"]
-        )
-
+        label = self.data[i]["label"]
         # Return
         return eeg, label
 
@@ -84,5 +78,4 @@ class EEGDataset:
         # Get subject
         subject = self.data[i]["subject"]
         # Return
-        semantic = None if self.semantics is None else self.data[i]["semantic"]
-        return eeg, label, image, subject, semantic
+        return eeg, label, image, subject

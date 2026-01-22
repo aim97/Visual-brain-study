@@ -1,15 +1,38 @@
 import torch
 from torch.utils.data import Dataset
 
+
 # Splitter class
 class Splitter(Dataset):
+    """Dataset splitter
 
-    def __init__(self, dataset, split_path, split_num=0, split_name="train"):
+    Args:
+        Dataset (_type_): _description_
+    """
+
+    def __init__(
+        self,
+        dataset,
+        split_path,
+        split_num=0,
+        split_name="train",
+        is_semantic=False,
+        combined_test_val=True,
+        return_full_record=False,
+    ):
         # Set EEG dataset
         self.dataset = dataset
+        self.return_full_record = return_full_record
         # Load split
         loaded = torch.load(split_path)
-        self.split_idx = loaded["splits"][split_num][split_name]
+        self.split_idx = (
+            loaded[split_name]
+            if is_semantic
+            else loaded["splits"][split_num][split_name]
+        )
+        if combined_test_val and split_name == "test":
+            # append val indices for test set
+            self.split_idx += loaded["splits"][split_num]["val"]
         # Filter data
         self.split_idx = [
             i
@@ -26,6 +49,9 @@ class Splitter(Dataset):
     # Get item
     def __getitem__(self, i):
         # Get sample from dataset
-        eeg, label = self.dataset[self.split_idx[i]] 
+        eeg, label, image, subject = self.dataset.get_record(self.split_idx[i])
         # Return
-        return eeg, label
+        if self.return_full_record:
+            return eeg, label, image, subject
+        else:
+            return eeg, label

@@ -1,12 +1,12 @@
-import pickle
-import argparse
 import glob
 import os
 import torch
 from torch.utils.data import DataLoader
 from pathlib import Path
-import logging
 import pandas as pd
+
+import matplotlib.pyplot as plt
+import seaborn as sns
 
 from ..utils import EEGDataset, load_checkpoint, ValidationOnlySplitter, get_model_hash
 
@@ -45,6 +45,39 @@ def get_pretrained_model_paths(model_names, dataset_names):
 
             models.extend([(model_name, dataset_name, f) for f in model_files])
     return models
+
+
+def get_conf_stats(conf_mat: pd.DataFrame, labels: list, k, eta):
+    """This method compute the stats of a confusion matrix to reflect which classes
+    are not learnt well by our model
+
+    Args:
+        conf (pd.DataFrame): dataframe for the confusion matrix
+        labels (list): a list of actual labels names
+    Returns:
+        - A list of classes whose accuracy is higher than <high_limit>
+        - A list of classes whose accuracy is lower than <low_limit>, and for each we want
+            - The sorted miss classes
+    """
+    # fix col and row names
+    # conf_mat.set_index(conf_mat.columns[0], inplace=True)
+    conf_mat.index = conf_mat.index.map(lambda x: labels[int(x.split("_")[1])])
+    conf_mat.columns = conf_mat.columns.map(lambda x: labels[int(x.split("_")[1])])
+
+    # compute acc
+    acc = pd.Series(
+        {label: conf_mat.loc[label, label] for label in conf_mat.index}
+    ).sort_values(ascending=False)
+    high_acc_classes = acc.head(k)
+    low_acc_classes = acc.tail(k)
+
+    low_acc_classes_details = conf_mat.loc[low_acc_classes.index]
+    low_acc_classes_details = {
+        tc: low_acc_classes_details.loc[tc][low_acc_classes_details.loc[tc] > eta]
+        for tc in low_acc_classes_details.index
+    }
+
+    return high_acc_classes, low_acc_classes, low_acc_classes_details
 
 
 def get_model_path_by_hash(model_hash, dataset_names):
@@ -88,16 +121,12 @@ def find_best_models(dataset_models):
         for model_file in model_files:
             model_data = load_checkpoint_data(dataset_name, model_file)
             acc = model_data["acc"]
-            print(f"Model: {model_file}, Accuracy: {acc}")
             if acc > best_acc:
                 best_acc = acc
                 best_model_data = model_data
         if best_model_data is not None:
             best_models[dataset_name] = best_model_data
 
-    print("Best models found for datasets:")
-    for dataset_name in best_models:
-        print(f"  {dataset_name}: {best_models[dataset_name]['model_file']}")
     return best_models
 
 
@@ -205,7 +234,7 @@ def evaluate_model(model, model_type, dataset_path):
     print(f"Overall validation accuracy: {overall_accuracy:.4f}")
 
     # return per-subject accuracy dict and confusion matrix (numpy array)
-    return per_subject_accuracy, confusion.cpu().numpy()  # type: ignore
+    return per_subject_accuracy, confusion.cpu().numpy(), dataset.labels  # type: ignore
 
 
 if __name__ == "__main__":
@@ -218,22 +247,16 @@ if __name__ == "__main__":
         "eeg_14_70_std",
         "eeg_5_95_std",
     ]
-
-    print(f"Looking for models with hash: {hash}")
-
     models = get_model_path_by_hash(hash, datasets)
-
-    print(models)
     best_models = find_best_models(models)
 
+    dataset_stats = {dataset_name: {} for dataset_name in best_models}
     for dataset_name, model_data in best_models.items():
-        print(f"Evaluating model for dataset {dataset_name}")
         if model_data is None:
             print(f"No model found for dataset {dataset_name}")
             continue
-        print(f"Evaluating model for dataset {dataset_name}")
         model = model_data["model"]
-        subject_acc, conf = evaluate_model(
+        subject_acc, conf, labels = evaluate_model(
             model,
             model_type,
             os.path.join(PKG_ROOT, "data", "block", f"{dataset_name}.pth"),
@@ -251,9 +274,110 @@ if __name__ == "__main__":
             index=[f"True_{i}" for i in range(conf.shape[0])],
             columns=[f"Pred_{i}" for i in range(conf.shape[1])],
         )
+        conf_df = conf_df.div(conf_df.sum(axis=1), axis=0)
+        conf_stats = get_conf_stats(conf_df, labels, 5, 0.1)
+
         conf_csv_path = (
             f"confusion_matrix_{dataset_name}_{model_type}_{model_data['hash']}.csv"
         )
         conf_df.to_csv(conf_csv_path)
         print(f"Confusion matrix saved to {conf_csv_path}")
-    print("Done")
+
+        dataset_stats[dataset_name]["subject_acc"] = subject_acc
+        dataset_stats[dataset_name]["confusion"] = conf_df
+        dataset_stats[dataset_name]["best_classified"] = conf_stats[0]
+        dataset_stats[dataset_name]["worst_classified"] = conf_stats[1]
+        dataset_stats[dataset_name]["miss_classifications"] = conf_stats[2]
+
+        # Assume your confusion matrix is a DataFrame named `cm`
+        # rows = true labels (index),
+        # columns = predicted labels (columns)
+
+    subject_acc = {
+        dataset_name: dataset_stats[dataset_name]["subject_acc"]
+        for dataset_name in dataset_stats
+    }
+
+    subject_acc = pd.DataFrame(subject_acc)
+    subject_acc.to_csv(f"{model_type}_subject_acc.csv")
+
+    confusions = {name: dataset_stats[name]["confusion"] for name in dataset_stats}
+    dataset_names = list(confusions.keys())
+
+    # ---- Ensure consistent label order across matrices ----
+    # Use the union of all labels found in index/columns and reindex each DF.
+    # all_true_labels = pd.Index(
+    #     sorted(set().union(*[set(df.index) for df in confusions.values()]))
+    # )
+    # all_pred_labels = pd.Index(
+    #     sorted(set().union(*[set(df.columns) for df in confusions.values()]))
+    # )
+
+    confusions_aligned = confusions
+    # for name, cm in confusions.items():
+    #     cm_aligned = cm.reindex(
+    #         index=all_true_labels, columns=all_pred_labels, fill_value=0
+    #     )
+    #     confusions_aligned[name] = cm_aligned
+
+    # ---- Shared color scale based on max count across all matrices ----
+    max_val = max(cm.values.max() for cm in confusions_aligned.values())
+    # If you want per-row normalization for each matrix instead, compute separately (see below).
+
+    # ---- Create subplots side-by-side ----
+    n = len(dataset_names)
+    fig, axes = plt.subplots(1, n, figsize=(6 * n, 5), constrained_layout=True)
+
+    # In case there is only one dataset, axes may not be iterable
+    if n == 1:
+        axes = [axes]
+
+    # Plot each confusion matrix
+    for ax, name in zip(axes, dataset_names):
+        cm = confusions_aligned[name]
+        # stats = compute_confusion_stats(cm)
+        # best = stats["best"]
+        # worst = stats["worst"]
+        # print("Stats for dataset: ", name)
+        # print(stats)
+
+        sns.heatmap(
+            cm,
+            ax=ax,
+            cmap="Blues",
+            vmin=0,
+            vmax=max_val,  # consistent color scale across datasets
+            cbar=False,  # we'll add a shared colorbar later
+            annot=False,  # set True if the matrix is small enough to be readable
+            fmt=".0f",
+        )
+        ax.set_title(f"Confusion Matrix – {name}")
+        ax.set_xlabel("Predicted")
+        ax.set_ylabel("True")
+        # Improve tick readability
+        # ax.set_xticklabels(ax.get_xticklabels(), rotation=45, ha="right")
+        # ax.set_yticklabels(ax.get_yticklabels(), rotation=0)
+
+        ax.set_xticklabels([])
+        ax.set_yticklabels([])
+
+    # ---- Add a single shared colorbar ----
+    # Create a ScalarMappable to attach a colorbar
+    norm = plt.Normalize(vmin=0, vmax=max_val)
+    sm = plt.cm.ScalarMappable(cmap="Blues", norm=norm)
+    sm.set_array([])  # required for older Matplotlib versions
+    cbar = fig.colorbar(sm, ax=axes, fraction=0.02, pad=0.02)
+    cbar.set_label("Count")
+
+    plt.show()
+
+    # handle conf stats
+    for dataset in dataset_stats:
+        print("----------------------------------------------------")
+        print(f"best class accuracies obtained on dataset {dataset}")
+        print(dataset_stats[dataset]["best_classified"])
+        print(f"worst class accuracies obtained on dataset {dataset}")
+        for bad_class in dataset_stats[dataset]["miss_classifications"]:
+            print(f"class {bad_class} is often classified as:")
+            print(dataset_stats[dataset]["miss_classifications"][bad_class])
+        print("====================================================")
