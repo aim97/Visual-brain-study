@@ -11,8 +11,10 @@ class Model(nn.Module):
         spec_type: Literal["stft", "cwt"] = "cwt",
         core_model: Literal["ViT", "ResNet18", "SimpleEEGCNN"] = "SimpleEEGCNN",
         resize: Optional[int] = None,
+        features_only=False,
     ):
         super().__init__()
+        self.features_only = features_only
         self.powerImage = (
             LogPowerSpectrum()
             if spec_type == "stft"
@@ -36,11 +38,11 @@ class Model(nn.Module):
                 patch_dim=batch_dim,
                 num_classes=40,
                 dim=128,
-                blocks=2,
+                blocks=1,
                 heads=32,
                 dim_linear_block=128,
-                classification=True,
-                classification_structure=True,
+                classification=not features_only,
+                classification_structure=not features_only,
             )
         elif core_model == "ResNet18":
 
@@ -60,5 +62,9 @@ class Model(nn.Module):
         x = self.powerImage(x.squeeze())
         if self.resize is not None:
             x = self.resize(x)
-        x = self.visual_model(x)
+        x = (
+            self.visual_model.forward_features(x)
+            if self.features_only
+            else self.visual_model(x)
+        )
         return x

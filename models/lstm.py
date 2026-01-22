@@ -20,7 +20,14 @@ import numpy as np
 
 class Model(nn.Module):
 
-    def __init__(self, input_size=128, lstm_size=128, lstm_layers=1, output_size=128):
+    def __init__(
+        self,
+        n_classes=40,
+        input_size=128,
+        lstm_size=128,
+        lstm_layers=1,
+        output_size=128,
+    ):
         # Call parent
         super().__init__()
         # Define parameters
@@ -34,7 +41,7 @@ class Model(nn.Module):
             input_size, lstm_size, num_layers=lstm_layers, batch_first=True
         )
         self.output = nn.Linear(lstm_size, output_size)
-        self.classifier = nn.Linear(output_size, 40)
+        self.classifier = nn.Linear(output_size, n_classes)
 
     def forward(self, x):
         # Prepare LSTM initiale state
@@ -51,4 +58,3 @@ class Model(nn.Module):
         x = F.relu(self.output(x))
         x = self.classifier(x)
         return x
-

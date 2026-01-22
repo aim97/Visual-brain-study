@@ -5,7 +5,7 @@ from braindecode import models
 class Model(nn.Module):
     def __init__(self, n_classes=40):
         super(Model, self).__init__()
-        self.core = models.EEGConformer(
+        self.core = models.ATCNet(
             n_outputs=n_classes,
             n_chans=128,
             n_times=440,
