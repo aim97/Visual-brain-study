@@ -9,5 +9,6 @@ from .blstm import Model as blstm
 from .EEGChannelNet import Model as EEGChannelNet
 from .lstm import Model as lstm
 from .EEGConformer import Model as EEGConformer
+from .SpectralBrainDecoder3D import Model as SpectralBrainDecoder3D
 
 from .registery import MODEL_REGISTRY

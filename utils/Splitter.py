@@ -49,7 +49,7 @@ class Splitter(Dataset):
     # Get item
     def __getitem__(self, i):
         # Get sample from dataset
-        eeg, label, image, subject = self.dataset.get_record(self.split_idx[i])
+        eeg, label, image, subject, _ = self.dataset.get_record(self.split_idx[i])
         # Return
         if self.return_full_record:
             return eeg, label, image, subject

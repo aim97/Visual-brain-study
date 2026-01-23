@@ -6,11 +6,14 @@ from .meta.electrode_names import channels
 
 
 class LogWaveletCWT(nn.Module):
-    def __init__(self, scales, wavelet="morl", eps=1e-8, mean_normalize=True):
+    def __init__(
+        self, scales, wavelet="morl", eps=1e-8, mean_normalize=False, bin_size=None
+    ):
         super().__init__()
         self.scales = scales
         self.eps = eps
         self.mean_normalize = mean_normalize
+        self.bin_size = bin_size
 
         # Precompute wavelet kernels
         kernels = []
@@ -30,7 +33,19 @@ class LogWaveletCWT(nn.Module):
         coeffs = coeffs.view(B, C, len(self.scales), coeffs.size(-1))
         log_power = torch.log(coeffs.abs().pow(2) + self.eps)
         if self.mean_normalize:
-            log_power = log_power - log_power.mean()
+            log_power = log_power - log_power.mean(dim=(-2, -1), keepdim=True)
+
+        if self.bin_size is not None:
+            S = log_power.size(2)
+            bs = int(self.bin_size)
+            if bs <= 0:
+                raise ValueError(f"bin_size must be > 0, got {bs}")
+
+            chunks = torch.split(log_power, bs, dim=2)  # list of (B,C,bi,T)
+            log_power = torch.stack(
+                [c.mean(dim=2) for c in chunks], dim=2
+            )  # (B,C,n_bins,T)
+
         return log_power
 
 
@@ -51,15 +66,18 @@ class LogPowerSpectrum(nn.Module):
     def __init__(
         self,
         fs: int = 1000,
-        nperseg: int = 128,
-        noverlap: int = 112,
-        nfft: int = 128,
+        nperseg: int = 96,  # 128
+        noverlap: int = int(96 * 0.9),  # 112
+        nfft: int = 96,  # 128
         window: str = "hamming",  # or a precomputed torch.Tensor of length nperseg
         center: bool = False,  # SciPy pads by default; set to False to be close to your call
         pad_mode: str = "reflect",
         eps: float = 1e-8,
         mean_normalize: bool = True,
         per_sample: bool = False,  # False => global mean (matches your function)
+        fmax_hz: (
+            float | None
+        ) = None,  # NEW: None => keep full band; else slice to [0, fmax_hz]
     ):
         super().__init__()
 
@@ -79,6 +97,7 @@ class LogPowerSpectrum(nn.Module):
         self.eps = eps
         self.mean_normalize = mean_normalize
         self.per_sample = per_sample
+        self.fmax_hz = fmax_hz
 
         # Build/register window as a buffer so it moves with .to(device)
         if isinstance(window, torch.Tensor):
@@ -134,6 +153,23 @@ class LogPowerSpectrum(nn.Module):
         power = Z.abs().pow(2)  # (..., F, K)
         log_power = torch.log(power + self.eps)
 
+        # --- NEW: frequency-band slicing [0, fmax_hz] ---
+        if self.fmax_hz is not None:
+            # k_max = floor(fmax_hz * nfft / fs), but clamp to last bin (nfft//2)
+            max_bin = self.nfft // 2
+            k_max = int(
+                torch.clamp(
+                    torch.tensor(
+                        self.fmax_hz * self.nfft / self.fs, device=log_power.device
+                    ),
+                    min=0,
+                    max=max_bin,
+                )
+                .floor()
+                .item()
+            )
+            log_power = log_power[..., : (k_max + 1), :]  # keep bins 0..k_max
+
         # Mean normalization (default: global to match your function)
         if self.mean_normalize:
             if self.per_sample:
@@ -155,8 +191,12 @@ class LogPowerSpectrum(nn.Module):
 
     @property
     def freqs(self) -> torch.Tensor:
-        """Frequency axis in Hz."""
-        return torch.fft.rfftfreq(self.nfft, d=1.0 / self.fs)
+        """Frequency axis in Hz (sliced if fmax_hz is set)."""
+        full = torch.fft.rfftfreq(self.nfft, d=1.0 / self.fs).to(self.window.device)
+        if self.fmax_hz is None:
+            return full
+        k_max = min(int(self.fmax_hz * self.nfft // self.fs), self.nfft // 2)
+        return full[: k_max + 1]
 
     def frame_times(self, num_frames: int) -> torch.Tensor:
         """Helper to get time axis (sec) given output frames."""
@@ -167,8 +207,7 @@ class LogPowerSpectrum(nn.Module):
 
 class EEGScalpMap(nn.Module):
     """
-    Map (B, C, T) to (B, T, H, W) using a (H, W) CSV template of channel labels.
-    Empty cells (or labels not in `electrodes`) become zeros in the output.
+    PyTorch layer that maps EEG channel data onto a 2D scalp map grid.
     """
 
     def __init__(
@@ -231,4 +270,124 @@ class EEGScalpMap(nn.Module):
 
         # 6) Squeeze the singleton channel dim → (B, T, H, W)
         scalp = scalp.squeeze(2)
+        return scalp
+
+
+class SpectralEEGScalpMap(nn.Module):
+    r"""
+    Map EEG channel data to a 2D scalp map grid.
+
+    UPDATED (strict):
+      * Accepts:
+          - x: (B, T, C)          → returns (B, T, H, W)
+          - x: (B, P, T, C)       → returns (B, P, T, H, W)
+        where C == len(electrodes)
+      * No internal handling of legacy layouts.
+
+    Args:
+        electrode_positions_csv: CSV whose cells contain channel names (or empty).
+        electrodes: list of channel names in the same order as x[..., :, C]
+        dtype: dtype for internal buffers
+
+    Notes:
+        Any CSV entry not found in `electrodes` is treated as -1 (filled with zeros).
+    """
+
+    def __init__(self, electrode_positions_csv: str, electrodes, dtype=torch.float32):
+        super().__init__()
+        if electrodes is None or len(electrodes) == 0:
+            raise ValueError(
+                "`electrodes` (list of channel names in the same order as the last dim of x) is required."
+            )
+
+        self.electrodes = list(electrodes)
+        self.num_channels = len(self.electrodes)
+        self.dtype = dtype
+
+        # Load CSV grid and convert cell→channel index (or -1)
+        df = pd.read_csv(electrode_positions_csv, header=None).fillna("")
+        df = df.map(lambda x: x.strip() if isinstance(x, str) else x)
+
+        def to_idx(cell):
+            if isinstance(cell, str) and cell in self.electrodes:
+                return self.electrodes.index(cell)
+            return -1  # empty/missing cell
+
+        idx_grid = df.map(to_idx).values  # (H, W) int array
+        idx_grid = torch.as_tensor(idx_grid, dtype=torch.long)
+        self.register_buffer("idx_grid", idx_grid, persistent=False)
+        self.H, self.W = idx_grid.shape
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        """
+        Args:
+            x: Tensor of shape
+                - (B, T, C)      or
+                - (B, P, T, C)
+            C must equal len(self.electrodes)
+
+        Returns:
+            scalp:
+                - (B, T, H, W)       if input was (B, T, C)
+                - (B, P, T, H, W)    if input was (B, P, T, C)
+        """
+        if x.ndim == 3:
+            B, T, C = x.shape
+            if C != self.num_channels:
+                # Common mistake: legacy (B, C, T)
+                if x.shape[1] == self.num_channels:
+                    raise ValueError(
+                        f"Expected x to be (B, T, C={self.num_channels}) but got (B, C, T). "
+                        f"Transpose upstream: x = x.transpose(1, 2)."
+                    )
+                raise ValueError(
+                    f"Last dim (C) must be {self.num_channels}, got {C}. "
+                    f"Ensure x is (B, T, C) with channels matching `electrodes`."
+                )
+            # Normalize to (B, P, T, C) with P=1
+            x = x.unsqueeze(1)  # (B, 1, T, C)
+            squeeze_P = True
+
+        elif x.ndim == 4:
+            B, P, T, C = x.shape
+            if C != self.num_channels:
+                # Common mistake: legacy (B, P, C, T)
+                if x.shape[2] == self.num_channels:
+                    raise ValueError(
+                        f"Expected x to be (B, P, T, C={self.num_channels}) but got (B, P, C, T). "
+                        f"Transpose upstream: x = x.transpose(2, 3)."
+                    )
+                raise ValueError(
+                    f"Last dim (C) must be {self.num_channels}, got {C}. "
+                    f"Ensure x is (B, P, T, C) with channels matching `electrodes`."
+                )
+            squeeze_P = False
+        else:
+            raise ValueError(
+                f"x must be 3D or 4D: (B,T,C) or (B,P,T,C), got {tuple(x.shape)}"
+            )
+
+        # From here x is (B, P, T, C) with correct C
+        B, P, T, C = x.shape
+        H, W = self.H, self.W
+
+        # Pad a dummy zero-channel along the channel axis → (B, P, T, C+1)
+        zero_pad = x.new_zeros((B, P, T, 1))
+        x_bptc = torch.cat([x, zero_pad], dim=3)  # (B, P, T, C+1)
+
+        # Prepare indices: -1 → C (dummy channel)
+        idx = self.idx_grid.to(x.device)  # (H, W)
+        idx_safe = torch.where(idx < 0, torch.full_like(idx, C), idx)  # (H, W)
+
+        # Expand and gather over channel dimension (dim=3)
+        # x6d:   (B, P, T, C+1, H, W)
+        x6d = x_bptc.unsqueeze(-1).unsqueeze(-1).expand(B, P, T, C + 1, H, W)
+        # idx6d: (B, P, T, 1,   H, W)
+        idx6d = idx_safe.view(1, 1, 1, 1, H, W).expand(B, P, T, 1, H, W)
+        # Gather → (B, P, T, 1, H, W) → squeeze channel → (B, P, T, H, W)
+        scalp = torch.gather(x6d, dim=3, index=idx6d).squeeze(3)
+
+        if squeeze_P:
+            scalp = scalp.squeeze(1)  # (B, T, H, W)
+
         return scalp
