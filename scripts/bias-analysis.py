@@ -10,22 +10,6 @@ import seaborn as sns
 
 from ..utils import EEGDataset, load_checkpoint, ValidationOnlySplitter, get_model_hash
 
-# orig_torch_load = torch.load
-
-
-# def torch_wrapper(*args, **kwargs):
-#     logging.warning(
-#         "[comfyui-unsafe-torch] I have unsafely patched `torch.load`.  The `weights_only` option of `torch.load` is forcibly disabled."
-#     )
-#     kwargs["weights_only"] = False
-
-#     return orig_torch_load(*args, **kwargs)
-
-
-# torch.load = torch_wrapper
-
-# NODE_CLASS_MAPPINGS = {}
-# __all__ = ["NODE_CLASS_MAPPINGS"]
 
 PKG_ROOT = Path(__file__).resolve().parents[1]  # .../eeg_visual_classification
 MODELS_DIR = PKG_ROOT / "stored models"
@@ -307,59 +291,35 @@ if __name__ == "__main__":
     confusions = {name: dataset_stats[name]["confusion"] for name in dataset_stats}
     dataset_names = list(confusions.keys())
 
-    # ---- Ensure consistent label order across matrices ----
-    # Use the union of all labels found in index/columns and reindex each DF.
-    # all_true_labels = pd.Index(
-    #     sorted(set().union(*[set(df.index) for df in confusions.values()]))
-    # )
-    # all_pred_labels = pd.Index(
-    #     sorted(set().union(*[set(df.columns) for df in confusions.values()]))
-    # )
-
     confusions_aligned = confusions
-    # for name, cm in confusions.items():
-    #     cm_aligned = cm.reindex(
-    #         index=all_true_labels, columns=all_pred_labels, fill_value=0
-    #     )
-    #     confusions_aligned[name] = cm_aligned
 
     # ---- Shared color scale based on max count across all matrices ----
     max_val = max(cm.values.max() for cm in confusions_aligned.values())
-    # If you want per-row normalization for each matrix instead, compute separately (see below).
 
     # ---- Create subplots side-by-side ----
     n = len(dataset_names)
     fig, axes = plt.subplots(1, n, figsize=(6 * n, 5), constrained_layout=True)
 
-    # In case there is only one dataset, axes may not be iterable
     if n == 1:
         axes = [axes]
 
     # Plot each confusion matrix
     for ax, name in zip(axes, dataset_names):
         cm = confusions_aligned[name]
-        # stats = compute_confusion_stats(cm)
-        # best = stats["best"]
-        # worst = stats["worst"]
-        # print("Stats for dataset: ", name)
-        # print(stats)
 
         sns.heatmap(
             cm,
             ax=ax,
             cmap="Blues",
             vmin=0,
-            vmax=max_val,  # consistent color scale across datasets
-            cbar=False,  # we'll add a shared colorbar later
-            annot=False,  # set True if the matrix is small enough to be readable
+            vmax=max_val,
+            cbar=False,
+            annot=False,
             fmt=".0f",
         )
         ax.set_title(f"Confusion Matrix – {name}")
         ax.set_xlabel("Predicted")
         ax.set_ylabel("True")
-        # Improve tick readability
-        # ax.set_xticklabels(ax.get_xticklabels(), rotation=45, ha="right")
-        # ax.set_yticklabels(ax.get_yticklabels(), rotation=0)
 
         ax.set_xticklabels([])
         ax.set_yticklabels([])

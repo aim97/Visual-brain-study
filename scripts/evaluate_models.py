@@ -82,8 +82,8 @@ if __name__ == "__main__":
         "EEGNET": models.EEGNET(),
         "EEGConformer": models.EEGConformer(),
         "BrainDecoder": models.BrainDecoder(),
-        "BrainDecoder3D": models.BrainDecoder3D(),
-        "SpectralBrainDecoder3D": models.SpectralBrainDecoder3D(),
+        "BrainDecoder3D": models.NeuroStream(),
+        "SpectralBrainDecoder3D": models.NeuroStream4D(),
         # "blstm": models.blstm(),
         # "lstm": models.lstm(),
     }
