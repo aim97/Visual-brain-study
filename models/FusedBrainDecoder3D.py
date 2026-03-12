@@ -1,8 +1,7 @@
-import torch
 import torch.nn as nn
 
 from .SleepingPower import Model as VisualProcessor
-from .BrainDecoder3D import Model as ScalpReader
+from .NeuroStream import Model as ScalpReader
 
 
 class Model(nn.Module):

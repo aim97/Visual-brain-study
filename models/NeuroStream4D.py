@@ -2,7 +2,7 @@ import torch
 import torch.nn as nn
 import numpy as np
 
-from ..models.BrainDecoder3D import EEG3DNet
+from .NeuroStream import EEG3DNet
 from .meta.electrode_names import channels
 from .VisualTransforms import SpectralEEGScalpMap, LogWaveletCWT, LogPowerSpectrum
 
