@@ -31,5 +31,5 @@ class ValidationOnlySplitter(Dataset):
     def __getitem__(self, i):
         # Get sample from dataset
         idx = self.split_idx[i]
-        eeg, label, image, subject = self.dataset.get_record(idx)
+        eeg, label, image, subject, _ = self.dataset.get_record(idx)
         return eeg, label, subject

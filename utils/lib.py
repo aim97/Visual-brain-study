@@ -264,7 +264,7 @@ def create_parser(
     parser.add_argument(
         "-lrdb",
         "--learning-rate-decay-by",
-        default=0.5,
+        default=0.125,
         type=float,
         help="learning rate decay factor",
     )

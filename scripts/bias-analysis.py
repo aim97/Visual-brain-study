@@ -238,8 +238,11 @@ def evaluate_model(model, model_type, dataset_path):
 
 
 if __name__ == "__main__":
-    model_type = "BrainDecoder3D"
-    model_options = {}
+    model_type = "SpectralBrainDecoder3D"
+    model_options = {
+        "base": 48,
+        "n_blocks": 3,
+    }
     hash = get_model_hash(model_type, model_options)
     datasets = [
         "eeg_signals_raw_with_mean_std",
@@ -381,3 +384,23 @@ if __name__ == "__main__":
             print(f"class {bad_class} is often classified as:")
             print(dataset_stats[dataset]["miss_classifications"][bad_class])
         print("====================================================")
+
+    # best classified across datasets
+    best_classified = set.intersection(
+        *[
+            set(dataset_stats[dataset]["best_classified"].index.tolist())
+            for dataset in dataset_stats
+        ]
+    )
+    print("The best classified classes across datasets are:")
+    print(best_classified)
+
+    # worst classified across datasets
+    worst_classified = set.intersection(
+        *[
+            set(dataset_stats[dataset]["worst_classified"].index.tolist())
+            for dataset in dataset_stats
+        ]
+    )
+    print("The worst classified classes across datasets are:")
+    print(worst_classified)

@@ -23,6 +23,7 @@ class Splitter(Dataset):
         # Set EEG dataset
         self.dataset = dataset
         self.return_full_record = return_full_record
+        self.is_semantic = is_semantic
         # Load split
         loaded = torch.load(split_path)
         self.split_idx = (
@@ -49,9 +50,11 @@ class Splitter(Dataset):
     # Get item
     def __getitem__(self, i):
         # Get sample from dataset
-        eeg, label, image, subject, _ = self.dataset.get_record(self.split_idx[i])
+        eeg, label, image, subject, semantic = self.dataset.get_record(
+            self.split_idx[i]
+        )
         # Return
         if self.return_full_record:
             return eeg, label, image, subject
         else:
-            return eeg, label
+            return eeg, (label if not self.is_semantic else semantic)

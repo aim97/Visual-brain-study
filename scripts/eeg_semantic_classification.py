@@ -38,7 +38,7 @@ opt = create_parser(
     default_eeg_dataset=DEFAULT_EEG_DATASET,
     split_path_default=DEFAULT_SPLITS_PATH,
 ).parse_args()
-DATASET_TYPE = opt.eeg_dataset.split("\\")[2].split(".")[0]
+DATASET_TYPE = opt.eeg_dataset.split("\\")[-1].split(".")[0]
 model_options = extract_model_options(opt.model_params)
 model_options["n_classes"] = 10
 MODEL_HASH = get_model_hash(opt.model_type, model_options)
@@ -201,3 +201,10 @@ for epoch in range(1, opt.epochs + 1):
     losses_per_epoch["val"].append(VL)
     accuracies_per_epoch["train"].append(TrA)
     accuracies_per_epoch["val"].append(VA)
+
+    # stop training if 60 epochs have passed without improvement in validation accuracy
+    if epoch - best_epoch >= 60:
+        print(
+            f"Early stopping at epoch {epoch} due to no improvement in validation accuracy for 60 epochs."
+        )
+        break
