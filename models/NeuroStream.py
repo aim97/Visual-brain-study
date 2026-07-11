@@ -3,6 +3,7 @@ import torch.nn as nn
 
 from .meta.electrode_names import channels
 from .VisualTransforms import EEGScalpMap
+from .utils import Tab
 
 
 class R2Plus1D_Block(nn.Module):
@@ -154,8 +155,9 @@ class EEG3DNet(nn.Module):
                     k_t=r21plus1d_temporal_kernel_size,
                     activation=activation,
                     is_temporal_first=is_temporal_first,
-                )
+                ),
             )
+            blocks.append(Tab("> "))
         self.rds = nn.Sequential(*blocks)
 
         # ---- Head ----
@@ -171,8 +173,10 @@ class EEG3DNet(nn.Module):
         else:
             # If no pooling, output size depends on (T, H, W) after strides → infer with a dummy forward
             with torch.no_grad():
+                T, H, W = (441, 15, 11)
                 # Choose a reasonable dummy input with enough T to survive temporal strides (e.g., T=32)
-                dummy = torch.zeros(1, 1, 32, 32, 32)
+                # dummy = torch.zeros(1, 4, 440, 15, 11)
+                dummy = torch.zeros(1, video_channels, T, H, W) # <-- Dynamically shaped
                 features = self.forward_features(dummy)
                 in_features = features.shape[-1]
 
@@ -180,8 +184,12 @@ class EEG3DNet(nn.Module):
 
     def forward_features(self, x):
         x = self.stem(x)
+        print("After stem: ", x.shape)
         x = self.rds(x)
-        return self.head(x)
+        print("After rds: ", x.shape)
+        x = self.head(x)
+        print("After head: ", x.shape)
+        return x
 
     def forward(self, x):  # x: (B,1,T,32,32)
         x = self.forward_features(x)

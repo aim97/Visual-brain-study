@@ -1,91 +1,124 @@
-import torch
 import time
+
+import numpy as np
+import torch
+from thop import profile
+
 import eeg_visual_classification.models as models
-
-
-def count_parameters(model):
-    """Return the total number of trainable parameters in the model."""
-    return sum(p.numel() for p in model.parameters() if p.requires_grad)
 
 
 def evaluate_model(model, input_size=(1, 128, 440), device="cpu", runs=10):
     """
-    Measure evaluation time for a given model.
-    Args:
-        model: PyTorch model.
-        input_size: Shape of the input tensor (batch_size, channels, samples).
-        device: 'cpu' or 'cuda'.
-        runs: Number of runs to average timing.
+    Measure evaluation metrics for a given model.
     Returns:
-        avg_time: Average inference time in seconds.
+        metrics_dict: Dictionary containing params, macs, flops, and timing statistics in ms.
     """
     model = model.to(device)
     model.eval()
     dummy_input = torch.randn(input_size).to(device)
 
-    # Warm-up (important for GPU)
+    # 1. Profile MACs & Params ONCE (Isolated from timing loop to avoid overhead)
+    with torch.no_grad():
+        macs, params = profile(model, inputs=(dummy_input,), verbose=False)
+    flops = macs * 2  # Standard approximation: 1 MAC ≈ 2 FLOPs
+
+    # 2. Warm-up (Crucial for clearing CUDA graph setup/caching overhead)
     with torch.no_grad():
         for _ in range(5):
             _ = model(dummy_input)
 
-    # Timing
-    start = time.time()
+    if device == "cuda":
+        torch.cuda.synchronize()
+
+    # 3. Pure Inference Timing Loop (Tracking individual run times)
+    run_times = []
     with torch.no_grad():
         for _ in range(runs):
-            _ = model(dummy_input)
-    end = time.time()
+            if device == "cuda":
+                torch.cuda.synchronize()
+            start = time.time()
 
-    avg_time = (end - start) / runs
-    return avg_time
+            _ = model(dummy_input)
+
+            if device == "cuda":
+                torch.cuda.synchronize()
+            end = time.time()
+
+            # Convert seconds to milliseconds
+            run_times.append((end - start) * 1000)
+
+    # Calculate statistics
+    metrics_dict = {
+        "params": params,
+        "macs": macs,
+        "flops": flops,
+        "time_avg": np.mean(run_times),
+        "time_std": np.std(run_times),
+        "time_min": np.min(run_times),
+        "time_max": np.max(run_times),
+    }
+    return metrics_dict
 
 
 def inspect_models(models_dict, input_size=(1, 128, 440), device="cpu"):
     """
-    Inspect multiple models for parameter count and evaluation time.
-    Args:
-        models_dict: Dictionary {model_name: model_instance}.
-        input_size: Shape of input tensor.
-        device: 'cpu' or 'cuda'.
+    Inspect multiple models and display structural and performance statistics.
     """
     results = []
+    print("Profiling models...")
     for name, model in models_dict.items():
-        params = count_parameters(model)
-        time_taken = evaluate_model(model, input_size, device)
-        results.append((name, params, time_taken))
+        metrics = evaluate_model(model, input_size, device)
+        results.append((name, metrics))
 
-    # sort by parameters
-    results.sort(key=lambda x: x[1])
+    # Sort models by parameter count extracted from thop
+    results.sort(key=lambda x: x[1]["params"])
 
-    # Print results
-    print(f"{'Model':<30}{'Parameters':<20}{'Eval Time (s)':<15}")
-    print("-" * 70)
-    for name, params, time_taken in results:
-        print(f"{name:<30}{params:<20}{time_taken:<15.6f}")
+    # Print clean wide table results
+    headers = f"{'Model':<25}{'Params':<12}{'MACs':<10}{'FLOPs':<10}{'Avg (ms)':<12}{'Std (ms)':<10}{'Min (ms)':<10}{'Max (ms)':<10}"
+    print(f"\n{headers}")
+    print("-" * 100)
+
+    for name, m in results:
+        # Format large structural numbers (e.g., 1.5M, 2.3G)
+        p_str = (
+            f"{m['params'] / 1e6:.2f}M" if m["params"] >= 1e6 else f"{m['params']:,.0f}"
+        )
+        m_str = (
+            f"{m['macs'] / 1e6:.2f}M" if m["macs"] < 1e9 else f"{m['macs'] / 1e9:.2f}G"
+        )
+        f_str = (
+            f"{m['flops'] / 1e6:.2f}M"
+            if m["flops"] < 1e9
+            else f"{m['flops'] / 1e9:.2f}G"
+        )
+
+        print(
+            f"{name:<25}"
+            f"{p_str:<12}"
+            f"{m_str:<10}"
+            f"{f_str:<10}"
+            f"{m['time_avg']:<12.3f}"
+            f"{m['time_std']:<10.3f}"
+            f"{m['time_min']:<10.3f}"
+            f"{m['time_max']:<10.3f}"
+        )
 
 
-# Example usage:
 if __name__ == "__main__":
     models_to_test = {
         "EEGChannelNet": models.EEGChannelNet(),
-        "SleepingPowerCWT": models.SleepingPower(
-            spec_type="cwt", core_model="SimpleEEGCNN"
-        ),
-        "SleepingPowerSTFT": models.SleepingPower(
+        "CWT-SpecCNN": models.SleepingPower(spec_type="cwt", core_model="SimpleEEGCNN"),
+        "STFT-SpecCNN": models.SleepingPower(
             spec_type="stft", core_model="SimpleEEGCNN"
         ),
-        "SleepingPowerResnetCWT": models.SleepingPower(
-            spec_type="cwt", core_model="ResNet18"
-        ),
-        "SleepingPowerResnetSTFT": models.SleepingPower(
-            spec_type="stft", core_model="ResNet18"
-        ),
+        "CWT_Resent18": models.SleepingPower(spec_type="cwt", core_model="ResNet18"),
+        "STFT_ResNet18": models.SleepingPower(spec_type="stft", core_model="ResNet18"),
         "EEGNET": models.EEGNET(),
         "EEGConformer": models.EEGConformer(),
         "BrainDecoder": models.BrainDecoder(),
-        "BrainDecoder3D": models.NeuroStream(),
-        "SpectralBrainDecoder3D": models.NeuroStream4D(),
-        # "blstm": models.blstm(),
-        # "lstm": models.lstm(),
+        "NeuroStream": models.NeuroStream(),
+        "NeuroStream4D": models.NeuroStream4D(),
+        "proposed": models.NeuroStream4D(bin_size=30, n_blocks=3, base=48),
     }
 
     inspect_models(

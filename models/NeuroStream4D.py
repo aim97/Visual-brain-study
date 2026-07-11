@@ -52,17 +52,16 @@ class Model(nn.Module):
         self.bin_size = bin_size
 
     def forward(self, x):  # -> Any:  # x: (B, 1, F, T)
+        print("Input shape: ", x.shape)
         x = self.power_transform(x.squeeze())  # B, C, F', T
-        # B, C, F, T = x.shape
-        # B, C, F'', T
-        # print("After power transform: ", x.shape)
-        # x = x.view(B, C, F // self.bin_size, self.bin_size, T).mean(dim=3)
-        # print("After aggregation: ", x.shape)
+        print("After power transform: ", x.shape)
         x = x.permute(0, 2, 3, 1)  # B, F'', T, C
-        # print("After reshaping: ", x.shape)
+        print("After reshaping: ", x.shape)
         x = self.map(x.squeeze())  # (B, F'', T, H, W)
-        # print("After ScalpMapping: ", x.shape)
-        return self.model.forward_features(x) if self.features_only else self.model(x)
+        print("After ScalpMapping: ", x.shape)
+        x = self.model.forward_features(x) if self.features_only else self.model(x)
+        print("After model: ", x.shape)
+        return x
 
     @torch.no_grad()
     def forward_features(self, x):

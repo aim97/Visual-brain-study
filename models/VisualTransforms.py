@@ -30,6 +30,7 @@ class LogWaveletCWT(nn.Module):
         B, C, T = x.shape
         x = x.view(B * C, 1, T)
         coeffs = F.conv1d(x, self.kernels, padding=self.kernels.size(-1) // 2)
+        coeffs = coeffs[..., :T]
         coeffs = coeffs.view(B, C, len(self.scales), coeffs.size(-1))
         log_power = torch.log(coeffs.abs().pow(2) + self.eps)
         if self.mean_normalize:
@@ -374,7 +375,7 @@ class SpectralEEGScalpMap(nn.Module):
         # Pad a dummy zero-channel along the channel axis → (B, P, T, C+1)
         zero_pad = x.new_zeros((B, P, T, 1))
         x_bptc = torch.cat([x, zero_pad], dim=3)  # (B, P, T, C+1)
-
+        print("x_bptc: ", x_bptc.shape)
         # Prepare indices: -1 → C (dummy channel)
         idx = self.idx_grid.to(x.device)  # (H, W)
         idx_safe = torch.where(idx < 0, torch.full_like(idx, C), idx)  # (H, W)
@@ -382,6 +383,7 @@ class SpectralEEGScalpMap(nn.Module):
         # Expand and gather over channel dimension (dim=3)
         # x6d:   (B, P, T, C+1, H, W)
         x6d = x_bptc.unsqueeze(-1).unsqueeze(-1).expand(B, P, T, C + 1, H, W)
+        print("x6d: ", x6d.shape)
         # idx6d: (B, P, T, 1,   H, W)
         idx6d = idx_safe.view(1, 1, 1, 1, H, W).expand(B, P, T, 1, H, W)
         # Gather → (B, P, T, 1, H, W) → squeeze channel → (B, P, T, H, W)

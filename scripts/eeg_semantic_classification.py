@@ -1,12 +1,8 @@
 """some summary"""
-
 import os
 from pathlib import Path
-
-
 import torch
 import pandas as pd
-
 from eeg_visual_classification.utils.lib import (
     create_parser,
     extract_model_options,
@@ -18,7 +14,6 @@ from eeg_visual_classification.utils.lib import (
 from ..models import MODEL_REGISTRY
 
 torch.utils.backcompat.broadcast_warning.enabled = True  # type: ignore
-
 import torch.backends.cudnn as cudnn
 import torch.nn.functional as F
 import torch.optim
