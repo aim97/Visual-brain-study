@@ -1,0 +1,26 @@
+# Core
+torch
+torchvision
+torchaudio
+numpy
+pandas
+scipy
+scikit-learn
+
+# EEG / spectral
+pywavelets
+braindecode
+torcheeg
+
+# Model zoo components used by a few baselines/utilities
+einops
+timm
+self-attention-cv
+
+# Plotting
+matplotlib
+seaborn
+
+# Profiling / model summaries
+thop
+torchinfo
